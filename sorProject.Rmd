@@ -1,0 +1,692 @@
+---
+title: "MSProject"
+author: "Eleanor Wagner"
+date: "2024-03-13"
+output: html_document
+---
+
+Set working directory and libraries needed
+```{r}
+setwd("C:/Users/backup/Documents/Eleanor stuff/Eleanor school/MS Project")
+library(tidyverse)
+library(readr)
+library(dplyr)
+library(tibble)
+```
+
+First need to do some cleaning and set up of data from GEO, read in data file first
+```{r}
+#deleted header material in notepad++, had supplemental information
+HCC <- read.table("GSE109211_series_matrix.txt", header = TRUE, sep = "\t", fileEncoding = "UTF-8", fill = TRUE)
+HCC <- t(HCC)#transpose to make easier to read
+```
+
+Rename some of the columns so shorter and easier to select for later
+```{r}
+# Set the column names based on the first row
+colnames(HCC) <- HCC[1, ]
+# Remove the first row, assuming it contains the column names
+HCC <- HCC[-1, ]
+
+#change some column names for simpler use 
+
+# Get the column names
+column_names <- colnames(HCC)
+
+# Identify the positions of the columns to rename
+positions_to_rename <- grep("!Sample_characteristics_ch1", column_names)
+
+# Rename the columns based on their positions
+colnames(HCC)[positions_to_rename[1]] <- "Tissue"
+colnames(HCC)[positions_to_rename[2]] <- "Treatment"
+colnames(HCC)[positions_to_rename[3]] <- "Outcome"
+```
+
+First direction was to split data into Placebo and Treatment groups, I also remove some columns and did additional cleaning
+```{r}
+#split into placebo DF and sorafenib DF 
+#class(HCC)
+# Convert the matrix to a data frame
+HCC <- as.data.frame(HCC)
+
+# Identify the rows where Treatment is "treatment: Plac"
+df_plac <- subset(HCC, Treatment == "treatment: Plac")
+#clean these a bit more by removing unnecessary col but save original df for info if needed
+#print(colnames(df_plac))
+plac <- df_plac %>%
+  select(-"!Sample_status", -"!Sample_submission_date",-"!Sample_last_update_date", -"!Sample_type",
+         -"!Sample_channel_count",-"!Sample_source_name_ch1", -"!Sample_organism_ch1",-"!Sample_molecule_ch1", 
+         -"!Sample_extract_protocol_ch1", -"!Sample_label_ch1", -"!Sample_label_protocol_ch1",-"!Sample_taxid_ch1",
+         -"!Sample_hyb_protocol",- "!Sample_scan_protocol",-"!Sample_data_processing",-"!Sample_platform_id", 
+         -"!Sample_contact_name",-"!Sample_contact_email", -"!Sample_contact_department",-"!Sample_contact_institute", 
+         -"!Sample_contact_address",-"!Sample_contact_city",-"!Sample_contact_zip/postal_code",-"!Sample_contact_country",
+         -"!Sample_supplementary_file",-"!series_matrix_table_begin", -"!Sample_data_row_count", -"!Sample_description", -"ID_REF")
+colnames(plac)[colnames(plac) == "!Sample_geo_accession"  ] <- "Accession"
+
+# Identify the rows where Treatment is "treatment: Sor"
+df_sor <- subset(HCC, Treatment == "treatment: Sor")
+sor <- df_sor %>%
+  select(-"!Sample_status", -"!Sample_submission_date",-"!Sample_last_update_date", -"!Sample_type",
+         -"!Sample_channel_count",-"!Sample_source_name_ch1", -"!Sample_organism_ch1",-"!Sample_molecule_ch1", 
+         -"!Sample_extract_protocol_ch1", -"!Sample_label_ch1", -"!Sample_label_protocol_ch1",-"!Sample_taxid_ch1",
+         -"!Sample_hyb_protocol",- "!Sample_scan_protocol",-"!Sample_data_processing",-"!Sample_platform_id", 
+         -"!Sample_contact_name",-"!Sample_contact_email", -"!Sample_contact_department",-"!Sample_contact_institute", 
+         -"!Sample_contact_address",-"!Sample_contact_city",-"!Sample_contact_zip/postal_code",-"!Sample_contact_country",
+         -"!Sample_supplementary_file",-"!series_matrix_table_begin",-"!Sample_data_row_count", -"!Sample_description", -"ID_REF")
+```
+
+More set up on data frame, there is multistage
+```{r}
+#str(sor)
+#str(plac)
+
+#change the ILMN columns to numeric type 
+ILMN_columns <- grep("^ILMN", colnames(plac), value = TRUE)
+# Convert selected columns to numeric
+plac <- plac %>%
+  mutate_at(all_of(ILMN_columns), as.numeric)
+#str(plac)
+
+#change the ILMN columns to numeric type 
+ILMN_columns <- grep("^ILMN", colnames(sor), value = TRUE)
+# Convert selected columns to numeric
+sor <- sor %>%
+  mutate_at(all_of(ILMN_columns), as.numeric)
+#str(sor)
+
+#confirmed that ILMN is of numeric type
+
+colnames(sor)[colnames(sor) == "!Sample_geo_accession"] <- "GEO" #change column name for geo 
+colnames(plac)[colnames(plac) == "!Sample_geo_accession"] <- "GEO" #change column name for geo 
+```
+
+again, set up data frame for easiest use, done in steps as I understood more of how I wanted to use data
+Also this is just with Sorafenib group, placebo done later
+```{r}
+##a little more modification of this df 
+sor <- sor[, !colnames(sor) %in% c("Treatment", "Tissue")] #delete Treatment and tissue columns 
+sor$Sample <- rownames(sor) #change sample to a new column
+rownames(sor) <- sor$GEO
+sor <- sor[, -which(names(sor) == "GEO")]
+sor <- sor[, !(names(sor) %in% c("!series_matrix_table_end", "Sample"))] #found two more unnecessary columns 
+
+#i ran to here 3/23 12:56
+
+#maybe not needed
+#outcome <- as.factor(sor$Outcome)
+#sor <- sor[, -which(names(sor) == "Outcome")]
+
+#sor <- t(data.frame(sor, Outcome = outcome))
+#somehow i have an extra row 
+#sor <- sor[, -which(names(sor) == "Outcome.1")]
+```
+
+try a DEseq2 
+
+Lasso Model no PCA 
+SOR
+```{r}
+library(glmnet)
+library(Matrix)
+sor <-as.data.frame(sor)
+sor <- na.omit(sor)
+# Filter predictor variables starting with "ilmn"
+predictors <- sor[, grepl("^ILMN", names(sor))]
+# Extract response variable
+# Convert Outcome variable to binary (0 or 1) in the data frame sor
+lassoDF <- sor
+lassoDF$Outcome <- ifelse(sor$Outcome == "outcome: responder", 1, 
+                      ifelse(sor$Outcome == "outcome: non-responder", 0, sor$Outcome))
+response <- as.numeric(lassoDF$Outcome)
+
+# Perform Lasso regression using glmnet
+lasso_model <- cv.glmnet(as.matrix(predictors), response, alpha = 1)
+
+# Print the cross-validated results
+print(lasso_model)
+
+# Plot the cross-validation results
+#plot(lasso_model)
+
+# Extract coefficients from the Lasso model
+coefficients <- as.matrix(coef(lasso_model, s = "lambda.min"))
+# View the coefficients
+#print(coefficients)
+
+# Extract variables with non-zero coefficients
+selected_variables <- rownames(coefficients)[coefficients != 0]
+
+# Print the selected variables
+print(selected_variables)
+```
+
+RF Sorafenib group
+varSelRF package
+Varaible selection using random forest
+```{r}
+library(varSelRF)
+
+#define parameters
+response <- as.factor(sor$Outcome)
+predictors <-sor[, -which(names(sor) == "Outcome")]
+
+
+#varselrf_model <- varSelRF(predictors, response)
+varselrf_model <- varSelRF(predictors, response)
+
+varselrf_model$selected.vars
+```
+
+ANOVA 
+```{r}
+# Perform ANOVA for each gene
+anova_results <- list()
+pValList <- numeric(ncol(predictors))  # Initialize vector to store p-values
+
+for (i in 1:ncol(predictors)) {
+  formula <- paste(names(predictors)[i], "~ Outcome")
+  model <- aov(as.formula(formula), data = sor)
+  summary_model <- summary(model)
+  pValList[i] <- summary_model[[1]]$"Pr(>F)"[1]
+}
+
+# Select significant features (p-value < 0.05)
+significant_features_sor <- names(predictors)[pValList < 0.01]
+str(significant_features_sor)
+```
+PLACEBO GROUP
+First need to do data set up like on sor group
+```{r}
+plac <- plac[, !colnames(plac) %in% c("Treatment", "Tissue")] #delete Treatment and tissue columns 
+plac$Sample <- rownames(plac) #change sample to a new column
+rownames(plac) <- plac$Accession
+plac <- plac[, -which(names(plac) == "Accession")]
+plac <- plac[, !(names(plac) %in% c("!series_matrix_table_end", 'Sample'))] #found two more unnecessary columns 
+plac <- na.omit(plac)
+```
+
+LASSO on Placebo group 
+```{r}
+library(glmnet)
+library(Matrix)
+plac <-as.data.frame(plac)
+plac <- na.omit(plac)
+# Filter predictor variables starting with "ilmn"
+predictorsPlac <- plac[, grepl("^ILMN", names(plac))]
+# Extract response variable
+# Convert Outcome variable to binary (0 or 1) in the data frame plac
+lassoDFplac <- plac
+lassoDFplac$Outcome <- ifelse(plac$Outcome == "outcome: responder", 1, 
+                      ifelse(plac$Outcome == "outcome: non-responder", 0, plac$Outcome))
+responsePlac <- as.numeric(lassoDFplac$Outcome)
+
+# Perform Lasso regression using glmnet
+lasso_mode_plac <- cv.glmnet(as.matrix(predictorsPlac), responsePlac, alpha = 1)
+
+# Print the cross-validated results
+print(lasso_mode_plac)
+
+# Plot the cross-validation results
+#plot(lasso_model)
+
+# Extract coefficients from the Lasso model
+Placcoefficients <- as.matrix(coef(lasso_mode_plac, s = "lambda.min"))
+# View the coefficients
+#print(coefficients)
+
+# Extract variables with non-zero coefficients
+selected_variables_plac <- rownames(Placcoefficients)[Placcoefficients != 0]
+
+# Print the selected variables
+print(selected_variables_plac)
+```
+
+Varself on Placebo group
+```{r}
+library(varSelRF)
+#define parameters
+outcomeplac <- as.factor(plac$Outcome)
+placPredictor <- plac[, -which(names(plac) == "Outcome")]
+
+varSelRF(placPredictor, outcomeplac)
+varselrf_model$selected.vars
+```
+
+ANOVA on Placebo group
+```{r}
+# Perform ANOVA for each gene
+anova_results <- list()
+pValList <- numeric(ncol(placPredictor))  # Initialize vector to store p-values
+
+for (i in 1:ncol(placPredictor)) {
+  formula <- paste(names(placPredictor)[i], "~ Outcome")
+  model <- aov(as.formula(formula), data = plac)
+  summary_model <- summary(model)
+  pValList[i] <- summary_model[[1]]$"Pr(>F)"[1]
+}
+
+# Select significant features (p-value < 0.05)
+significant_features_plac <- names(placPredictor)[pValList < 0.01]
+str(significant_features_plac)
+```
+
+
+
+Look for overlap in feature selection 
+```{r}
+#first define each feature selection group
+#Sorafenib group LASSO feature selection
+sor_las=c("ILMN_1675335", "ILMN_1677080","ILMN_1680279","ILMN_1691760", "ILMN_1691962", "ILMN_1706649", "ILMN_1707326",
+          "ILMN_1751398", "ILMN_1756210", "ILMN_1790556", "ILMN_1811221", "ILMN_2049343", "ILMN_2155322", "ILMN_2230162", 
+          "ILMN_2292723", "ILMN_2316974", "ILMN_2342455", "ILMN_2346562", "ILMN_2415393", "ILMN_3240607", "ILMN_3249658", 
+          "ILMN_3308025")
+#Sorafenib group RF feature selection
+sor_rf=c("ILMN_1800634", "ILMN_2126802", "ILMN_3236377")
+#placebo group LASSO feature selection
+P_las = c("ILMN_1662123", "ILMN_1677347", "ILMN_1692433", "ILMN_1694080", "ILMN_1701581", "ILMN_1702125", "ILMN_1703326",
+                  "ILMN_1718783", "ILMN_1721732", "ILMN_1728605", "ILMN_1737698", "ILMN_1745409", "ILMN_1748694", "ILMN_1779095", 
+                  "ILMN_1784316", "ILMN_1789186", "ILMN_1801941", "ILMN_1808249", "ILMN_2223056", "ILMN_2279834", "ILMN_2384405",
+                  "ILMN_3238649", "ILMN_3245175","ILMN_3245209", "ILMN_3307700")
+#placebo group RF feature selection
+P_rf = c("ILMN_1653163", "ILMN_1658684", "ILMN_1661194", "ILMN_1661432", "ILMN_1701774", "ILMN_1701905", "ILMN_1718079", "ILMN_1728605", "ILMN_1737698", "ILMN_1779412", "ILMN_2286574", "ILMN_2289887", "ILMN_3238649", "ILMN_3245175")
+#Sorafenib DEG upregulated
+sor_degu = c("ILMN_2217955", "ILMN_1702383", "ILMN_2106002", "ILMN_2115011", "ILMN_2258689", "ILMN_2346562", "ILMN_1748903", 
+                     "ILMN_1738691", "ILMN_1766087", "ILMN_2193443", "ILMN_2104821", "ILMN_3236377", "ILMN_2409720", "ILMN_1806394", 
+                     "ILMN_2127416", "ILMN_2135456", "ILMN_2298365", "ILMN_1652287", "ILMN_2257749", "ILMN_1815908")
+#Sorafenib DEG downregulated
+sor_degd = c("ILMN_1660749", "ILMN_1732053", "ILMN_1781626", "ILMN_1792922", "ILMN_1782977", "ILMN_2352609", "ILMN_1651405", "ILMN_2364357", 
+                     "ILMN_1783843", "ILMN_1753111", "ILMN_2279635", "ILMN_1765258", "ILMN_3235397", "ILMN_1769191", "ILMN_2371964", "ILMN_2333319", 
+                     "ILMN_1736162", "ILMN_1715715", "ILMN_1697735", "ILMN_1681437")
+#placebo DEG upregulated 
+P_degu = c("ILMN_1738691", "ILMN_3238649", "ILMN_2115011", "ILMN_2217955", "ILMN_3245175", "ILMN_2258689", "ILMN_2409720", "ILMN_2106002", "ILMN_2346562", "ILMN_2298365", 
+                 "ILMN_3242226", "ILMN_2193443", "ILMN_2127416", "ILMN_1766320", "ILMN_1700583", "ILMN_3245811", "ILMN_1793182", "ILMN_1759219", "ILMN_2281089", "ILMN_2289887")
+#placebo DEG downregulated
+P_degd = c("ILMN_1792922", "ILMN_1762260", "ILMN_1782977", "ILMN_2404154", "ILMN_1802923", "ILMN_1746516", "ILMN_3239272")
+
+#need to combine these lists i think for some error in intersect
+sor_features <- c(sor_las,sor_rf,sor_degu, sor_degd)
+print(intersect(sor_features,significant_features_sor))
+#same for placebo
+plac_features <- c(P_las,P_rf,P_degu,P_degd)
+print(intersect(plac_features,significant_features_plac))
+```
+
+Selected for overlap of features from feature selection to move forward with machine learning 
+
+Machine Learning 
+
+First need to select for the features 
+I'll start with Sor group
+```{r}
+library(dplyr)
+sor_features <- c("Outcome", "ILMN_1675335", "ILMN_1677080", "ILMN_1680279", "ILMN_1691760", "ILMN_1691962", "ILMN_1706649", "ILMN_1707326", "ILMN_1751398", "ILMN_1756210", "ILMN_1790556", "ILMN_1811221",                          "ILMN_2049343", "ILMN_2155322", "ILMN_2230162", "ILMN_2292723", "ILMN_2316974", "ILMN_2342455", "ILMN_2346562", "ILMN_2415393", "ILMN_3240607", "ILMN_3249658", "ILMN_3308025", "ILMN_1800634",                     "ILMN_2126802", "ILMN_3236377", "ILMN_2217955", "ILMN_1702383", "ILMN_2106002", "ILMN_2115011", "ILMN_2258689", "ILMN_1748903", "ILMN_1738691", "ILMN_1766087", "ILMN_2193443", "ILMN_2104821",                     "ILMN_2409720", "ILMN_1806394", "ILMN_2127416", "ILMN_2135456", "ILMN_2298365", "ILMN_1652287", "ILMN_2257749", "ILMN_1815908", "ILMN_1660749", "ILMN_1732053", "ILMN_1781626", "ILMN_1792922",                     "ILMN_1782977", "ILMN_2352609", "ILMN_1651405", "ILMN_2364357", "ILMN_1783843", "ILMN_1753111", "ILMN_2279635", "ILMN_1765258", "ILMN_3235397", "ILMN_1769191", "ILMN_2371964", "ILMN_2333319",                     "ILMN_1736162", "ILMN_1715715", "ILMN_1697735", "ILMN_1681437")
+ML_sor_df <- sor %>%
+  select(all_of(sor_features))
+```
+Split into X and Y and make outcome binary, goal=test a bunch of ML supervised learning methods
+```{r}
+bin_SorML <- ML_sor_df
+bin_SorML$Outcome <- ifelse(bin_SorML$Outcome == "outcome: responder", 1, 
+                      ifelse(bin_SorML$Outcome == "outcome: non-responder", 0, bin_SorML$Outcome))
+
+X <- bin_SorML[, -which(names(bin_SorML) == "Outcome")]
+y <- as.factor(bin_SorML$Outcome)
+```
+Try this from: https://machinelearningmastery.com/evaluate-machine-learning-algorithms-with-r/
+```{r}
+library(caret)
+library(mlbench)
+control <- trainControl(method="repeatedcv", number=10, repeats=3)
+seed <- 7
+metric <- "Accuracy"
+preProcess=c("center", "scale")
+#model  building
+set.seed(seed)
+fit.lda <- train(y ~ ., data = cbind(X, y), method="lda", metric=metric, preProc=c("center", "scale"), trControl=control)
+# Logistic Regression
+set.seed(seed)
+fit.glm <- train(y ~ ., data = cbind(X, y), method="glm", metric=metric, trControl=control)
+# GLMNET
+set.seed(seed)
+fit.glmnet <- train(y ~ ., data = cbind(X, y), method="glmnet", metric=metric, preProc=c("center", "scale"), trControl=control)
+# SVM Radial
+set.seed(seed)
+fit.svmRadial <- train(y ~ ., data = cbind(X, y), method="svmRadial", metric=metric, preProc=c("center", "scale"), trControl=control, fit=FALSE)
+# kNN
+set.seed(seed)
+fit.knn <- train(y ~ ., data = cbind(X, y), method="knn", metric=metric, preProc=c("center", "scale"), trControl=control)
+# Naive Bayes
+set.seed(seed)
+fit.nb <- train(y ~ ., data = cbind(X, y), method="nb", metric=metric, trControl=control)
+# CART
+set.seed(seed)
+fit.cart <- train(y ~ ., data = cbind(X, y), method="rpart", metric=metric, trControl=control)
+# C5.0
+set.seed(seed)
+fit.c50 <- train(y ~ ., data = cbind(X, y), method="C5.0", metric=metric, trControl=control)
+# Bagged CART
+set.seed(seed)
+fit.treebag <- train(y ~ ., data = cbind(X, y), method="treebag", metric=metric, trControl=control)
+# Random Forest
+set.seed(seed)
+fit.rf <- train(y ~ ., data = cbind(X, y), method="rf", metric=metric, trControl=control)
+# Stochastic Gradient Boosting (Generalized Boosted Modeling)
+set.seed(seed)
+fit.gbm <- train(y ~ ., data = cbind(X, y), method="gbm", metric=metric, trControl=control, verbose=FALSE)
+
+#model selection
+results <- resamples(list(lda=fit.lda, logistic=fit.glm, glmnet=fit.glmnet,
+ svm=fit.svmRadial, knn=fit.knn, nb=fit.nb, cart=fit.cart, c50=fit.c50,
+ bagging=fit.treebag, rf=fit.rf, gbm=fit.gbm))
+# Table comparison
+summary(results)
+
+# boxplot comparison
+bwplot(results)
+# Dot-plot comparison
+dotplot(results)
+```
+explanation of kappa since i am unsure on that statistic: The Kappa statistic (or value) is a metric that compares an Observed Accuracy with an Expected Accuracy (random chance). The kappa statistic is used not only to evaluate a single classifier, but also to evaluate classifiers amongst themselves. In addition, it takes into account random chance (agreement with a random classifier), which generally means it is less misleading than simply using accuracy as a metric (an Observed Accuracy of 80% is a lot less impressive with an Expected Accuracy of 75% versus an Expected Accuracy of 50%). Computation of Observed Accuracy and Expected Accuracy is integral to comprehension of the kappa statistic, and is most easily illustrated through use of a confusion matrix.
+
+RF,glmnet, and gbm best accuracy of models tested 
+Do these models, see variable importance 
+```{r}
+# Extract variable importance from rf
+variable_importance_rf <- varImp(fit.rf)
+# Print variable importance
+print("Random Forest Variable Importance:")
+print(variable_importance_rf)
+
+#glment 
+# Extracting coefficients from the fitted glmnet model
+coefficients <- coef(fit.glmnet)
+# Extracting non-zero coefficients and their corresponding variable names
+important_features <- names(coefficients)[coefficients != 0]
+print(important_features)
+```
+goals:try tuning most promising models, print accuracy measures for top models such as : accuracy, precision, recall, F1-score, and ROC-AUC.
+```{r}
+print(fit.rf)
+print(fit.glmnet)
+print(fit.svmRadial)
+```
+
+
+
+PLACEBO ML SECTION
+Select for selected features in Placebo group
+```{r}
+library(dplyr)
+plac_features <- c("Outcome", "ILMN_1662123", "ILMN_1677347", "ILMN_1692433", "ILMN_1694080", "ILMN_1701581", "ILMN_1702125", "ILMN_1703326", "ILMN_1718783", "ILMN_1721732", "ILMN_1728605", "ILMN_1737698",                         "ILMN_1745409", "ILMN_1748694", "ILMN_1779095", "ILMN_1784316", "ILMN_1789186", "ILMN_1801941", "ILMN_1808249", "ILMN_2223056", "ILMN_2279834", "ILMN_2384405", "ILMN_3238649", "ILMN_3245175",                     "ILMN_3245209", "ILMN_3307700", "ILMN_1653163", "ILMN_1658684", "ILMN_1661194", "ILMN_1661432", "ILMN_1701774", "ILMN_1701905", "ILMN_1718079", "ILMN_1779412", "ILMN_2286574", "ILMN_2289887")
+
+ML_plac_df <- plac %>%
+  select(all_of(plac_features))
+```
+Do sme x y data prep as sor group, should rename better than x and y to avoid confusion
+```{r}
+
+bin_placML <- ML_plac_df
+bin_placML$Outcome <- ifelse(bin_placML$Outcome == "outcome: responder", 1, 
+                      ifelse(bin_placML$Outcome == "outcome: non-responder", 0, bin_placML$Outcome))
+
+Plac_X <- bin_placML[, -which(names(bin_placML) == "Outcome")]
+Plac_y <- as.factor(bin_placML$Outcome)
+```
+Test different models like on sor group, used same soure of code ^^see above website for where 
+```{r}
+library(caret)
+library(mlbench)
+control <- trainControl(method="repeatedcv", number=10, repeats=3)
+seed <- 7
+metric <- "Accuracy"
+preProcess=c("center", "scale")
+#model  building
+set.seed(seed)
+fit.lda_plac <- train(Plac_y ~ ., data = cbind(Plac_X, Plac_y), method="lda", metric=metric, preProc=c("center", "scale"), trControl=control)
+
+set.seed(seed)
+fit.glm_plac <- train(Plac_y ~ ., data = cbind(Plac_X, Plac_y), method="glm", metric=metric, trControl=control)
+
+set.seed(seed)
+fit.glmnet_plac <- train(Plac_y ~ ., data = cbind(Plac_X, Plac_y), method="glmnet", metric=metric, preProc=c("center", "scale"), trControl=control)
+
+set.seed(seed)
+fit.svmRadial_plac <- train(Plac_y ~ ., data = cbind(Plac_X, Plac_y), method="svmRadial", metric=metric, preProc=c("center", "scale"), trControl=control, fit=FALSE)
+
+set.seed(seed)
+fit.knn_plac <- train(Plac_y ~ ., data = cbind(Plac_X, Plac_y), method="knn", metric=metric, preProc=c("center", "scale"), trControl=control)
+
+set.seed(seed)
+fit.nb_plac <- train(Plac_y ~ ., data = cbind(Plac_X, Plac_y), method="nb", metric=metric, trControl=control)
+
+set.seed(seed)
+fit.cart_plac <- train(Plac_y ~ ., data = cbind(Plac_X, Plac_y), method="rpart", metric=metric, trControl=control)
+
+set.seed(seed)
+fit.c50_plac <- train(Plac_y ~ ., data = cbind(Plac_X, Plac_y), method="C5.0", metric=metric, trControl=control)
+
+set.seed(seed)
+fit.treebag_plac <- train(Plac_y ~ ., data = cbind(Plac_X, Plac_y), method="treebag", metric=metric, trControl=control)
+
+set.seed(seed)
+fit.rf_plac <- train(Plac_y ~ ., data = cbind(Plac_X, Plac_y), method="rf", metric=metric, trControl=control)
+
+set.seed(seed)
+fit.gbm_plac <- train(Plac_y ~ ., data = cbind(Plac_X, Plac_y), method="gbm", metric=metric, trControl=control, verbose=FALSE)
+
+results_plac <- resamples(list(lda=fit.lda_plac, logistic=fit.glm_plac, glmnet=fit.glmnet_plac,
+ svm=fit.svmRadial_plac, knn=fit.knn_plac, nb=fit.nb_plac, cart=fit.cart_plac, c50=fit.c50_plac,
+ bagging=fit.treebag_plac, rf=fit.rf_plac, gbm=fit.gbm_plac))
+
+summary(results_plac)
+bwplot(results_plac)
+dotplot(results_plac)
+```
+print models of interest from stats 
+```{r}
+print(fit.rf_plac)
+print(fit.glmnet_plac)
+```
+
+
+
+ML part 2 
+with my deg analysis 
+Look for overlap in feature selection 
+```{r}
+#first define each feature selection group
+#Sorafenib group LASSO feature selection
+sor_las=c("ILMN_1675335", "ILMN_1677080","ILMN_1680279","ILMN_1691760", "ILMN_1691962", "ILMN_1706649", "ILMN_1707326",
+          "ILMN_1751398", "ILMN_1756210", "ILMN_1790556", "ILMN_1811221", "ILMN_2049343", "ILMN_2155322", "ILMN_2230162", 
+          "ILMN_2292723", "ILMN_2316974", "ILMN_2342455", "ILMN_2346562", "ILMN_2415393", "ILMN_3240607", "ILMN_3249658", 
+          "ILMN_3308025")
+#Sorafenib group RF feature selection
+sor_rf=c("ILMN_1800634", "ILMN_2126802", "ILMN_3236377")
+#placebo group LASSO feature selection
+P_las = c("ILMN_1662123", "ILMN_1677347", "ILMN_1692433", "ILMN_1694080", "ILMN_1701581", "ILMN_1702125", "ILMN_1703326",
+                  "ILMN_1718783", "ILMN_1721732", "ILMN_1728605", "ILMN_1737698", "ILMN_1745409", "ILMN_1748694", "ILMN_1779095", 
+                  "ILMN_1784316", "ILMN_1789186", "ILMN_1801941", "ILMN_1808249", "ILMN_2223056", "ILMN_2279834", "ILMN_2384405",
+                  "ILMN_3238649", "ILMN_3245175","ILMN_3245209", "ILMN_3307700")
+#placebo group RF feature selection
+P_rf = c("ILMN_1653163", "ILMN_1658684", "ILMN_1661194", "ILMN_1661432", "ILMN_1701774", "ILMN_1701905", "ILMN_1718079", "ILMN_1728605", "ILMN_1737698", "ILMN_1779412", "ILMN_2286574", "ILMN_2289887", "ILMN_3238649", "ILMN_3245175")
+#Sorafenib group DEG 
+sor_deg = c("ILMN_1741422", "ILMN_2217955", "ILMN_1708248", "ILMN_2316974", "ILMN_1684017", "ILMN_2245686", "ILMN_2319424", "ILMN_1753782", "ILMN_2288740", "ILMN_2396786", "ILMN_1713706", 
+            "ILMN_1712678", "ILMN_2126802", "ILMN_2219618", "ILMN_1764034", "ILMN_1773238", "ILMN_2407954", "ILMN_1660732", "ILMN_1751398", "ILMN_2264788", "ILMN_2298365", "ILMN_2360202", 
+            "ILMN_1726388", "ILMN_2106002", "ILMN_1775073", "ILMN_2346562", "ILMN_1665260", "ILMN_1738691", "ILMN_1756374", "ILMN_2218248", "ILMN_1745421", "ILMN_1759219", "ILMN_2337955", 
+            "ILMN_2122153", "ILMN_3178393", "ILMN_1796749", "ILMN_2175737", "ILMN_1769195", "ILMN_2115005", "ILMN_2115011", "ILMN_1653115", "ILMN_1714216", "ILMN_1762631", "ILMN_1800634", 
+            "ILMN_1732053", "ILMN_2380839", "ILMN_3248113", "ILMN_2127605", "ILMN_1655418", "ILMN_2393254", "ILMN_1714402", "ILMN_1656521", "ILMN_1688178", "ILMN_1691787", "ILMN_1703843", 
+            "ILMN_1783846", "ILMN_2275502", "ILMN_1715636", "ILMN_2278729", "ILMN_2379469", "ILMN_1753008", "ILMN_1688814", "ILMN_1712400", "ILMN_1733110", "ILMN_1793859", "ILMN_1734602",
+            "ILMN_1792922", "ILMN_2336781", "ILMN_2406501", "ILMN_1750400")
+plac_deg = c("ILMN_3245175", "ILMN_1737698", "ILMN_2174045", "ILMN_1702383", "ILMN_3249932", "ILMN_3250398", "ILMN_3250412","ILMN_1699365", "ILMN_2151168", "ILMN_1673357", "ILMN_2409720", 
+             "ILMN_1776442", "ILMN_3241416", "ILMN_1705551", "ILMN_1753166", "ILMN_1813594", "ILMN_1661194", "ILMN_1751174", "ILMN_2328575", "ILMN_2250830", "ILMN_2329171", 
+             "ILMN_1718079", "ILMN_1709434", "ILMN_2111255", "ILMN_1792568", "ILMN_3238649", "ILMN_1655426", "ILMN_1663787", "ILMN_1748981", "ILMN_2163723", "ILMN_1772383", "ILMN_1788240",
+             "ILMN_1798373", "ILMN_1667086", "ILMN_1701774", "ILMN_2362122", "ILMN_1733603", "ILMN_1755115", "ILMN_2395969", "ILMN_2395974", "ILMN_1731546", 
+             "ILMN_1769191", "ILMN_1785637", "ILMN_1804283", "ILMN_1731941", "ILMN_1654939", "ILMN_1800461", "ILMN_1728684", "ILMN_1731851", "ILMN_1782538", "ILMN_2058251", 
+             "ILMN_1677603", "ILMN_1781626", "ILMN_1787266", "ILMN_1652369", "ILMN_1797172", "ILMN_2277676", "ILMN_2377496", "ILMN_1761833", "ILMN_2053103", "ILMN_1662214", "ILMN_2218104", 
+             "ILMN_1653871", "ILMN_1753111", "ILMN_1661636", "ILMN_2403823", "ILMN_2038777", "ILMN_2152131")
+
+#need to combine these lists i think for some error in intersect
+sor_features2 <- c(sor_las,sor_rf,sor_deg)
+print(intersect(sor_features2,significant_features_sor))
+#same for placebo
+plac_features2 <- c(P_las,P_rf,plac_deg)
+print(intersect(plac_features2,significant_features_plac))
+```
+
+```{r}
+library(dplyr)
+sor_features <- c("Outcome", "ILMN_1675335", "ILMN_1677080", "ILMN_1680279", "ILMN_1691760", "ILMN_1691962", "ILMN_1706649", "ILMN_1707326", "ILMN_1751398", "ILMN_1756210",
+                  "ILMN_1790556", "ILMN_1811221", "ILMN_2049343", "ILMN_2155322","ILMN_2230162", "ILMN_2292723", "ILMN_2316974", "ILMN_2342455", "ILMN_2346562", "ILMN_2415393",
+                  "ILMN_3240607", "ILMN_3249658", "ILMN_3308025", "ILMN_1800634", "ILMN_2126802", "ILMN_3236377", "ILMN_2217955", "ILMN_2245686", "ILMN_1753782", "ILMN_2288740", 
+                  "ILMN_2396786", "ILMN_1713706", "ILMN_2219618", "ILMN_1764034", "ILMN_1773238", "ILMN_2407954", "ILMN_1660732", "ILMN_2298365", "ILMN_2360202", "ILMN_2106002",
+                  "ILMN_1775073", "ILMN_1665260", "ILMN_1738691", "ILMN_1756374", "ILMN_1759219", "ILMN_2122153", "ILMN_3178393", "ILMN_2175737", "ILMN_1769195", "ILMN_2115011","ILMN_1653115", 
+                  "ILMN_1714216", "ILMN_1732053", "ILMN_2127605", "ILMN_1655418", "ILMN_2393254", "ILMN_1714402", "ILMN_1688178", "ILMN_1691787", "ILMN_1703843", "ILMN_1783846", "ILMN_2275502",
+                  "ILMN_1715636", "ILMN_2379469", "ILMN_1753008", "ILMN_1712400","ILMN_1733110", "ILMN_1793859", "ILMN_1734602", "ILMN_1792922", "ILMN_2336781", "ILMN_2406501", "ILMN_1750400")
+ML_sor_df <- sor %>%
+  select(all_of(sor_features))
+```
+
+```{r}
+library(dplyr)
+plac_features <- c("Outcome", "ILMN_1662123", "ILMN_1677347", "ILMN_1692433", "ILMN_1694080", "ILMN_1701581", "ILMN_1702125", "ILMN_1703326", "ILMN_1718783", "ILMN_1721732",
+                   "ILMN_1728605", "ILMN_1737698", "ILMN_1745409", "ILMN_1748694", "ILMN_1779095", "ILMN_1784316", "ILMN_1789186", "ILMN_1801941", "ILMN_1808249", "ILMN_2223056",
+                   "ILMN_2279834", "ILMN_2384405", "ILMN_3238649", "ILMN_3245175", "ILMN_3245209", "ILMN_3307700", "ILMN_1653163", "ILMN_1658684", "ILMN_1661194", "ILMN_1661432",
+                   "ILMN_1701774", "ILMN_1701905", "ILMN_1718079", "ILMN_1779412", "ILMN_2286574", "ILMN_2289887", "ILMN_2174045", "ILMN_1702383", "ILMN_3250398", "ILMN_3250412",
+                   "ILMN_2151168", "ILMN_1673357", "ILMN_2409720", "ILMN_3241416", "ILMN_1705551", "ILMN_1753166", "ILMN_1813594", "ILMN_2329171", "ILMN_1709434", "ILMN_2111255",
+                   "ILMN_1792568", "ILMN_1663787", "ILMN_1748981", "ILMN_1798373", "ILMN_2362122", "ILMN_1733603", "ILMN_1755115", "ILMN_2395969", "ILMN_2395974", "ILMN_1731546",
+                   "ILMN_1769191", "ILMN_1785637", "ILMN_1804283", "ILMN_1731941", "ILMN_1654939", "ILMN_1800461","ILMN_1728684", "ILMN_1731851", "ILMN_1782538", "ILMN_2058251",
+                   "ILMN_1677603", "ILMN_1781626", "ILMN_1787266", "ILMN_1652369", "ILMN_2277676", "ILMN_2377496", "ILMN_1761833", "ILMN_2053103", "ILMN_1662214", "ILMN_2218104",
+                   "ILMN_1653871", "ILMN_1753111", "ILMN_1661636", "ILMN_2403823", "ILMN_2038777", "ILMN_2152131")
+ML_plac_df <- plac %>%
+  select(all_of(plac_features))
+```
+
+Split into X and Y and make outcome binary, goal=test a bunch of ML supervised learning methods
+```{r}
+bin_SorML <- ML_sor_df
+bin_SorML$Outcome <- ifelse(bin_SorML$Outcome == "outcome: responder", 1, 
+                      ifelse(bin_SorML$Outcome == "outcome: non-responder", 0, bin_SorML$Outcome))
+
+X <- bin_SorML[, -which(names(bin_SorML) == "Outcome")]
+y <- as.factor(bin_SorML$Outcome)
+```
+
+Model selection pt 2 
+Test different models like on sor group, used same soure of code ^^see above website for where 
+```{r}
+library(caret)
+library(mlbench)
+control <- trainControl(method="repeatedcv", number=10, repeats=3)
+seed <- 7
+metric <- "Accuracy"
+preProcess=c("center", "scale")
+
+# Model building
+set.seed(seed)
+fit.lda <- train(y ~ ., data = cbind(X, y), method="lda", metric=metric, preProc=c("center", "scale"), trControl=control)
+print(fit.lda)
+set.seed(seed)
+fit.glm <- train(y ~ ., data = cbind(X, y), method="glm", metric=metric, trControl=control)
+print(fit.glm)
+set.seed(seed)
+fit.glmnet <- train(y ~ ., data = cbind(X, y), method="glmnet", metric=metric, preProc=c("center", "scale"), trControl=control)
+print(fit.glmnet)
+set.seed(seed)
+fit.svmRadial <- train(y ~ ., data = cbind(X, y), method="svmRadial", metric=metric, preProc=c("center", "scale"), trControl=control, fit=FALSE)
+print(fit.svmRadial)
+set.seed(seed)
+fit.knn <- train(y ~ ., data = cbind(X, y), method="knn", metric=metric, preProc=c("center", "scale"), trControl=control)
+print(fit.knn)
+set.seed(seed)
+fit.nb <- train(y ~ ., data = cbind(X, y), method="nb", metric=metric, trControl=control)
+print(fit.nb)
+set.seed(seed)
+fit.cart <- train(y ~ ., data = cbind(X, y), method="rpart", metric=metric, trControl=control)
+print(fit.cart)
+set.seed(seed)
+fit.c50 <- train(y ~ ., data = cbind(X, y), method="C5.0", metric=metric, trControl=control)
+print(fit.c50)
+set.seed(seed)
+fit.treebag <- train(y ~ ., data = cbind(X, y), method="treebag", metric=metric, trControl=control)
+print(fit.treebag)
+set.seed(seed)
+fit.rf <- train(y ~ ., data = cbind(X, y), method="rf", metric=metric, trControl=control)
+print(fit.rf)
+set.seed(seed)
+fit.gbm <- train(y ~ ., data = cbind(X, y), method="gbm", metric=metric, trControl=control, verbose=FALSE)
+print(fit.gbm)
+results <- resamples(list(lda=fit.lda, logistic=fit.glm, glmnet=fit.glmnet,
+                           svm=fit.svmRadial, knn=fit.knn, nb=fit.nb, cart=fit.cart,
+                           bagging=fit.treebag, rf=fit.rf, gbm=fit.gbm))
+
+summary(results)
+bwplot(results)
+dotplot(results)
+```
+
+
+PLAC
+Split into X and Y and make outcome binary, goal=test a bunch of ML supervised learning methods
+```{r}
+bin_placML <- ML_plac_df
+bin_placML$Outcome <- ifelse(bin_placML$Outcome == "outcome: responder", 1, 
+                      ifelse(bin_placML$Outcome == "outcome: non-responder", 0, bin_placML$Outcome))
+
+X <- bin_placML[, -which(names(bin_placML) == "Outcome")]
+y <- as.factor(bin_placML$Outcome)
+```
+
+Model selection pt 2 
+Test different models like on sor group, used same soure of code ^^see above website for where 
+```{r}
+library(caret)
+library(mlbench)
+control <- trainControl(method="repeatedcv", number=10, repeats=3)
+seed <- 7
+metric <- "Accuracy"
+preProcess=c("center", "scale")
+
+# Model building
+set.seed(seed)
+fit.lda <- train(y ~ ., data = cbind(X, y), method="lda", metric=metric, preProc=c("center", "scale"), trControl=control)
+print(fit.lda)
+set.seed(seed)
+fit.glm <- train(y ~ ., data = cbind(X, y), method="glm", metric=metric, trControl=control)
+print(fit.glm)
+set.seed(seed)
+fit.glmnet <- train(y ~ ., data = cbind(X, y), method="glmnet", metric=metric, preProc=c("center", "scale"), trControl=control)
+print(fit.glmnet)
+set.seed(seed)
+fit.svmRadial <- train(y ~ ., data = cbind(X, y), method="svmRadial", metric=metric, preProc=c("center", "scale"), trControl=control, fit=FALSE)
+print(fit.svmRadial)
+set.seed(seed)
+fit.knn <- train(y ~ ., data = cbind(X, y), method="knn", metric=metric, preProc=c("center", "scale"), trControl=control)
+print(fit.knn)
+set.seed(seed)
+fit.nb <- train(y ~ ., data = cbind(X, y), method="nb", metric=metric, trControl=control)
+print(fit.nb)
+set.seed(seed)
+fit.cart <- train(y ~ ., data = cbind(X, y), method="rpart", metric=metric, trControl=control)
+print(fit.cart)
+set.seed(seed)
+fit.c50 <- train(y ~ ., data = cbind(X, y), method="C5.0", metric=metric, trControl=control)
+
+set.seed(seed)
+fit.treebag <- train(y ~ ., data = cbind(X, y), method="treebag", metric=metric, trControl=control)
+print(fit.treebag)
+set.seed(seed)
+fit.rf <- train(y ~ ., data = cbind(X, y), method="rf", metric=metric, trControl=control)
+print(fit.rf)
+set.seed(seed)
+fit.gbm <- train(y ~ ., data = cbind(X, y), method="gbm", metric=metric, trControl=control, verbose=FALSE)
+print(fit.gbm)
+results <- resamples(list(lda=fit.lda, logistic=fit.glm, glmnet=fit.glmnet,
+                           svm=fit.svmRadial, knn=fit.knn, nb=fit.nb, cart=fit.cart,
+                           bagging=fit.treebag, rf=fit.rf, gbm=fit.gbm))
+print(results)
+str(results)
+summary(results)
+bwplot(results)
+dotplot(results)
+
+```
